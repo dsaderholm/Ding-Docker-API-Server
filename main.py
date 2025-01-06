@@ -1,10 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
-from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip
+from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
 import os
 import tempfile
 import asyncio
 from pathlib import Path
+import traceback
 
 app = FastAPI()
 
@@ -31,9 +32,18 @@ async def add_ding_to_video(
         temp_input.flush()
         
         try:
+            # Debug: Print file paths
+            print(f"Input video path: {temp_input.name}")
+            print(f"Output video path: {temp_output.name}")
+            
+            # Check if ding file exists
+            ding_path = "/app/ding.mp3"
+            if not os.path.exists(ding_path):
+                raise FileNotFoundError(f"Ding sound file not found at {ding_path}")
+            
             # Load the video and ding sound
             video_clip = VideoFileClip(temp_input.name)
-            ding_clip = AudioFileClip("/app/ding.mp3")
+            ding_clip = AudioFileClip(ding_path)
             
             # Trim ding to specified duration
             ding_clip = ding_clip.subclip(0, min(ding_duration, ding_clip.duration))
@@ -66,10 +76,26 @@ async def add_ding_to_video(
             ding_clip.close()
             
         except Exception as e:
+            # Detailed error logging
+            print("Error during video processing:")
+            traceback.print_exc()
+            
             # Clean up files before raising exception
-            os.unlink(temp_input.name)
-            os.unlink(temp_output.name)
-            raise HTTPException(status_code=500, detail=f"Failed to process video: {str(e)}")
+            try:
+                os.unlink(temp_input.name)
+            except:
+                pass
+            
+            try:
+                os.unlink(temp_output.name)
+            except:
+                pass
+            
+            # Raise HTTP exception with detailed error
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to process video: {str(e)}\n{traceback.format_exc()}"
+            )
         
         # Create async cleanup function
         async def cleanup_files():
