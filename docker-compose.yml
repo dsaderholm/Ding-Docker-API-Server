@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  ding-api:
+    build: .
+    ports:
+      - "8894:8080"
+    restart: unless-stopped
+    networks:
+      video_generation:
+        ipv4_address: 10.20.0.15  # Slightly different IP from the previous service
+
+networks:
+  video_generation:
+    external: true
+    name: "Video Generation"
