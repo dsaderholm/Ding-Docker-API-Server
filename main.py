@@ -48,13 +48,13 @@ async def add_ding_to_video(
             # Trim ding to specified duration
             ding_clip = ding_clip.subclipped(0, min(ding_duration, ding_clip.duration))
             
-            # Create a composite audio that combines ding and original audio
+            # Create a composite audio that overlays ding sound with existing audio
             original_audio = video_clip.audio
             if original_audio:
-                # If video has audio, mix ding sound with existing audio
+                # If video has audio, overlay ding sound with existing audio
                 composite_audio = CompositeAudioClip([
-                    ding_clip.with_start(0),
-                    original_audio.with_start(ding_clip.duration)
+                    original_audio,
+                    ding_clip.with_start(0)
                 ])
             else:
                 # If no original audio, just use ding sound
