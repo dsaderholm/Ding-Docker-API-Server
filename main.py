@@ -46,7 +46,7 @@ async def add_ding_to_video(
             ding_clip = AudioFileClip(ding_path)
             
             # Trim ding to specified duration
-            ding_clip = ding_clip.subclip(0, min(ding_duration, ding_clip.duration))
+            ding_clip = ding_clip.subclipped(0, min(ding_duration, ding_clip.duration))
             
             # Create a composite audio that combines ding and original audio
             original_audio = video_clip.audio
