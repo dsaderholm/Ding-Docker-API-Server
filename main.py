@@ -53,8 +53,8 @@ async def add_ding_to_video(
             if original_audio:
                 # If video has audio, mix ding sound with existing audio
                 composite_audio = CompositeAudioClip([
-                    ding_clip.set_start(0),
-                    original_audio.set_start(ding_clip.duration)
+                    ding_clip.with_start(0),
+                    original_audio.with_start(ding_clip.duration)
                 ])
             else:
                 # If no original audio, just use ding sound
