@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
-from moviepy import VideoFileClip, AudioFileClip, CompositeAudioClip
+from moviepy.editor import VideoFileClip, AudioFileClip, CompositeAudioClip
 import os
 import tempfile
 import asyncio
@@ -61,7 +61,7 @@ async def add_ding_to_video(
                 composite_audio = ding_clip
             
             # Set the new audio to the video
-            final_clip = video_clip.set_audio(composite_audio)
+            final_clip = video_clip.with_audio(composite_audio)
             
             # Write the final video
             final_clip.write_videofile(
