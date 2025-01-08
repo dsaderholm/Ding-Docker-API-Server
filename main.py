@@ -12,11 +12,15 @@ app = FastAPI()
 @app.post("/add-ding/")
 async def add_ding_to_video(
     video: UploadFile = File(...),
-    ding_duration: float = 1.0
+    volume: float = 0.3  # Default to 30% volume (0.0 to 1.0 scale)
 ):
     # Validate file type (basic check)
     if not video.filename.endswith(('.mp4', '.avi', '.mov')):
         raise HTTPException(status_code=400, detail="Unsupported file format")
+    
+    # Validate volume parameter
+    if not 0 <= volume <= 1:
+        raise HTTPException(status_code=400, detail="Volume must be between 0.0 and 1.0")
     
     # Get original filename and extension
     original_filename = video.filename
@@ -45,8 +49,8 @@ async def add_ding_to_video(
             video_clip = VideoFileClip(temp_input.name)
             ding_clip = AudioFileClip(ding_path)
             
-            # Trim ding to specified duration
-            ding_clip = ding_clip.subclipped(0, min(ding_duration, ding_clip.duration))
+            # Adjust the volume of the ding
+            ding_clip = ding_clip.volumex(volume)
             
             # Create a composite audio that overlays ding sound with existing audio
             original_audio = video_clip.audio
