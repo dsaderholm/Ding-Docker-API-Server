@@ -12,7 +12,7 @@ app = FastAPI()
 @app.post("/add-ding/")
 async def add_ding_to_video(
     video: UploadFile = File(...),
-    volume: float = 0.3  # Default to 30% volume (0.0 to 1.0 scale)
+    volume: float = 0.10  # Default to 30% volume (0.0 to 1.0 scale)
 ):
     # Validate file type (basic check)
     if not video.filename.endswith(('.mp4', '.avi', '.mov')):
