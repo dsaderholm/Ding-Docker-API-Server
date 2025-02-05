@@ -1,7 +1,11 @@
 FROM python:3.10.11
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies including latest ffmpeg
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    apt-add-repository -y ppa:jonathonf/ffmpeg-4 && \
+    apt-get update && \
+    apt-get install -y \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
