@@ -90,8 +90,8 @@ async def add_ding_to_video(
             ding_clip = AudioFileClip(ding_path)
             print("Ding loaded successfully")
             
-            # Adjust the volume of the ding
-            ding_clip = ding_clip.set_volume(volume)
+            # Adjust the volume of the ding using volumex
+            ding_clip = ding_clip.volumex(volume)
             
             # Create a composite audio that overlays ding sound with existing audio
             original_audio = video_clip.audio
