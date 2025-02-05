@@ -9,11 +9,30 @@ import traceback
 
 app = FastAPI()
 
+def run_ffmpeg_command(cmd):
+    """Run FFmpeg command and return detailed output"""
+    print(f"Running FFmpeg command: {' '.join(cmd)}")
+    try:
+        process = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+        print(f"Return code: {process.returncode}")
+        print(f"stdout: {process.stdout}")
+        print(f"stderr: {process.stderr}")
+        return process
+    except Exception as e:
+        print(f"Exception running FFmpeg: {str(e)}")
+        raise
+
 @app.post("/add-ding/")
 async def add_ding_to_video(
     video: UploadFile = File(...),
     volume: float = 0.10  # Default to 10% volume (0.0 to 1.0 scale)
 ):
+    print(f"Processing new request. Video filename: {video.filename}, Volume: {volume}")
+    
     # Validate file type
     if not video.filename.endswith(('.mp4', '.avi', '.mov')):
         raise HTTPException(status_code=400, detail="Unsupported file format")
@@ -32,46 +51,46 @@ async def add_ding_to_video(
         
         try:
             # Save uploaded video
+            print("Reading uploaded content...")
             content = await video.read()
             temp_input.write(content)
             temp_input.flush()
+            print(f"Saved input video to: {temp_input.name} (size: {len(content)} bytes)")
+            
+            # Verify input file exists
+            if not os.path.exists('/app/ding.mp3'):
+                print("Checking ding.mp3 location:")
+                print(f"Current directory contents: {os.listdir('/app')}")
+                raise Exception("ding.mp3 not found in /app directory")
+            
+            print(f"Input file size: {os.path.getsize(temp_input.name)}")
+            print(f"Ding file size: {os.path.getsize('/app/ding.mp3')}")
             
             # Construct FFmpeg command
-            # This will:
-            # 1. Take input video
-            # 2. Take input ding sound
-            # 3. Adjust ding volume
-            # 4. Mix them together with the ding at the start
-            # 5. Output the final video
             cmd = [
                 'ffmpeg',
-                '-i', temp_input.name,  # Input video
-                '-i', '/app/ding.mp3',  # Input ding sound
+                '-i', temp_input.name,
+                '-i', '/app/ding.mp3',
                 '-filter_complex',
                 f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
-                '-map', '0:v',  # Keep original video
-                '-map', '[aout]',  # Use mixed audio
-                '-c:v', 'copy',  # Copy video codec (no re-encoding)
-                '-c:a', 'aac',  # Output audio codec
-                '-shortest',  # Cut to shortest input
+                '-map', '0:v',
+                '-map', '[aout]',
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-shortest',
                 temp_output.name
             ]
             
-            # Run FFmpeg command
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True
-            )
+            # Run FFmpeg
+            process = run_ffmpeg_command(cmd)
             
             if process.returncode != 0:
-                raise Exception(f"FFmpeg error: {process.stderr}")
+                raise Exception(f"FFmpeg failed with error: {process.stderr}")
             
-            # Check if output file exists and has size
-            if not os.path.exists(temp_output.name):
-                raise Exception("Output file was not created")
+            output_size = os.path.getsize(temp_output.name)
+            print(f"Output file size: {output_size}")
             
-            if os.path.getsize(temp_output.name) == 0:
+            if output_size == 0:
                 raise Exception("Output file is empty")
             
             # Set up response headers
@@ -98,20 +117,26 @@ async def add_ding_to_video(
             return response
             
         except Exception as e:
+            print("Error occurred:")
+            traceback.print_exc()
+            
             # Clean up files
             try:
                 os.unlink(temp_input.name)
-            except:
-                pass
+                print(f"Cleaned up input file: {temp_input.name}")
+            except Exception as cleanup_error:
+                print(f"Error cleaning up input file: {str(cleanup_error)}")
+            
             try:
                 os.unlink(temp_output.name)
-            except:
-                pass
+                print(f"Cleaned up output file: {temp_output.name}")
+            except Exception as cleanup_error:
+                print(f"Error cleaning up output file: {str(cleanup_error)}")
             
             # Raise error
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to process video: {str(e)}"
+                detail=f"Failed to process video: {str(e)}\n{traceback.format_exc()}"
             )
 
 if __name__ == "__main__":
