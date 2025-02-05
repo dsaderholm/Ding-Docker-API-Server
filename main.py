@@ -66,9 +66,10 @@ async def add_ding_to_video(
             print(f"Input file size: {os.path.getsize(temp_input.name)}")
             print(f"Ding file size: {os.path.getsize('/app/ding.mp3')}")
             
-            # Construct FFmpeg command
+            # Construct FFmpeg command - added -y flag to force overwrite
             cmd = [
                 'ffmpeg',
+                '-y',  # Force overwrite output file
                 '-i', temp_input.name,
                 '-i', '/app/ding.mp3',
                 '-filter_complex',
