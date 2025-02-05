@@ -19,8 +19,10 @@ def run_ffmpeg_command(cmd):
             text=True
         )
         print(f"Return code: {process.returncode}")
-        print(f"stdout: {process.stdout}")
-        print(f"stderr: {process.stderr}")
+        if process.stdout:
+            print(f"stdout: {process.stdout}")
+        if process.stderr:
+            print(f"stderr: {process.stderr}")
         return process
     except Exception as e:
         print(f"Exception running FFmpeg: {str(e)}")
@@ -31,47 +33,84 @@ async def add_ding_to_video(
     video: UploadFile = File(...),
     volume: float = 0.10  # Default to 10% volume (0.0 to 1.0 scale)
 ):
-    print(f"Processing new request. Video filename: {video.filename}, Volume: {volume}")
-    
     # Validate file type
-    if not video.filename.endswith(('.mp4', '.avi', '.mov')):
-        raise HTTPException(status_code=400, detail="Unsupported file format")
+    if not video.filename.lower().endswith(('.mp4', '.avi', '.mov')):
+        raise HTTPException(
+            status_code=400, 
+            detail="Unsupported file format. Only .mp4, .avi, and .mov files are supported."
+        )
     
     # Validate volume parameter
     if not 0 <= volume <= 1:
-        raise HTTPException(status_code=400, detail="Volume must be between 0.0 and 1.0")
+        raise HTTPException(
+            status_code=400, 
+            detail="Volume must be between 0.0 and 1.0"
+        )
     
-    # Get original filename and extension
-    original_filename = video.filename
-    file_extension = os.path.splitext(original_filename)[1]
+    print(f"Processing request for file: {video.filename}")
     
     # Create temporary files for processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_input, \
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_input, \
          tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_output:
         
         try:
-            # Save uploaded video
-            print("Reading uploaded content...")
-            content = await video.read()
-            temp_input.write(content)
-            temp_input.flush()
-            print(f"Saved input video to: {temp_input.name} (size: {len(content)} bytes)")
+            # Read file in chunks to handle large files
+            print("Reading uploaded file...")
+            with open(temp_input.name, 'wb') as buffer:
+                while content := await video.read(1024 * 1024):  # Read 1MB at a time
+                    buffer.write(content)
             
-            # Verify input file exists
-            if not os.path.exists('/app/ding.mp3'):
-                print("Checking ding.mp3 location:")
-                print(f"Current directory contents: {os.listdir('/app')}")
-                raise Exception("ding.mp3 not found in /app directory")
+            file_size = os.path.getsize(temp_input.name)
+            print(f"File saved. Size: {file_size} bytes")
             
-            print(f"Input file size: {os.path.getsize(temp_input.name)}")
-            print(f"Ding file size: {os.path.getsize('/app/ding.mp3')}")
+            if file_size < 1024:  # Less than 1KB
+                raise HTTPException(
+                    status_code=400,
+                    detail="Uploaded file is too small to be a valid video file"
+                )
             
-            # Construct FFmpeg command - added -y flag to force overwrite
+            # Verify the video file is valid
+            probe_cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=width,height,duration',
+                '-of', 'json',
+                temp_input.name
+            ]
+            
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            if probe_result.returncode != 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="The uploaded file is not a valid video file"
+                )
+            
+            # Check if ding file exists and is valid
+            ding_path = "/app/ding.mp3"
+            if not os.path.exists(ding_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail="Ding sound file not found"
+                )
+            
+            ding_size = os.path.getsize(ding_path)
+            if ding_size == 0:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Ding sound file is empty"
+                )
+            
+            print(f"Input video path: {temp_input.name}")
+            print(f"Output video path: {temp_output.name}")
+            print(f"Ding file size: {ding_size} bytes")
+            
+            # Construct FFmpeg command
             cmd = [
                 'ffmpeg',
-                '-y',  # Force overwrite output file
+                '-y',  # Force overwrite
                 '-i', temp_input.name,
-                '-i', '/app/ding.mp3',
+                '-i', ding_path,
                 '-filter_complex',
                 f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
                 '-map', '0:v',
@@ -86,21 +125,24 @@ async def add_ding_to_video(
             process = run_ffmpeg_command(cmd)
             
             if process.returncode != 0:
-                raise Exception(f"FFmpeg failed with error: {process.stderr}")
+                raise Exception(f"FFmpeg failed: {process.stderr}")
+            
+            # Verify output file
+            if not os.path.exists(temp_output.name):
+                raise Exception("Output file was not created")
             
             output_size = os.path.getsize(temp_output.name)
-            print(f"Output file size: {output_size}")
-            
             if output_size == 0:
                 raise Exception("Output file is empty")
             
-            # Set up response headers
+            print(f"Processing complete. Output size: {output_size} bytes")
+            
+            # Prepare response
             headers = {
                 'Content-Type': 'video/mp4',
-                'Content-Disposition': f'attachment; filename="{Path(original_filename).name}"'
+                'Content-Disposition': f'attachment; filename="{Path(video.filename).stem}_with_ding.mp4"'
             }
             
-            # Create response
             response = FileResponse(
                 path=temp_output.name,
                 headers=headers
@@ -134,10 +176,12 @@ async def add_ding_to_video(
             except Exception as cleanup_error:
                 print(f"Error cleaning up output file: {str(cleanup_error)}")
             
-            # Raise error
+            # Return appropriate error
+            if isinstance(e, HTTPException):
+                raise e
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to process video: {str(e)}\n{traceback.format_exc()}"
+                detail=str(e)
             )
 
 if __name__ == "__main__":
