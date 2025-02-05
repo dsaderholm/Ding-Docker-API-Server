@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   ding-api:
     build: .
@@ -7,7 +6,7 @@ services:
     restart: unless-stopped
     networks:
       video_generation:
-        ipv4_address: 10.20.0.15  # Slightly different IP from the previous service
+        ipv4_address: 10.20.0.15
 
 networks:
   video_generation:
