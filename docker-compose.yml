@@ -4,6 +4,10 @@ services:
     ports:
       - "8894:8080"
     restart: unless-stopped
+    volumes:
+      - /dev/dri:/dev/dri
+    devices:
+      - /dev/dri
     networks:
       video_generation:
         ipv4_address: 10.20.0.15
