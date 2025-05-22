@@ -10,7 +10,7 @@ import traceback
 app = FastAPI()
 
 def run_ffmpeg_command(cmd):
-    """Run FFmpeg command and return detailed output"""
+    """Run FFmpeg command with Intel Arc GPU acceleration and return detailed output"""
     print(f"Running FFmpeg command: {' '.join(cmd)}")
     try:
         process = subprocess.run(
@@ -27,6 +27,31 @@ def run_ffmpeg_command(cmd):
     except Exception as e:
         print(f"Exception running FFmpeg: {str(e)}")
         raise
+
+def check_intel_arc_support():
+    """Check if Intel Arc GPU hardware acceleration is available"""
+    try:
+        # Run vainfo to check GPU hardware acceleration availability
+        process = subprocess.run(['vainfo', '--display', 'drm', '--device', '/dev/dri/renderD128'], 
+                               stdout=subprocess.PIPE, 
+                               stderr=subprocess.PIPE, 
+                               text=True,
+                               timeout=10)
+        
+        if process.returncode == 0:
+            gpu_info = process.stdout
+            if 'Intel' in gpu_info and 'H264' in gpu_info:
+                print("✅ Intel Arc GPU hardware acceleration available")
+                return True
+            else:
+                print("⚠️ Intel GPU found but limited codec support")
+                return False
+        else:
+            print("⚠️ Intel GPU hardware acceleration not available")
+            return False
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        print(f"⚠️ GPU check failed: {str(e)}")
+        return False
 
 @app.post("/add-ding/")
 async def add_ding_to_video(
@@ -105,21 +130,50 @@ async def add_ding_to_video(
             print(f"Output video path: {temp_output.name}")
             print(f"Ding file size: {ding_size} bytes")
             
-            # Construct FFmpeg command
-            cmd = [
-                'ffmpeg',
-                '-y',  # Force overwrite
-                '-i', temp_input.name,
-                '-i', ding_path,
-                '-filter_complex',
-                f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
-                '-map', '0:v',
-                '-map', '[aout]',
-                '-c:v', 'copy',
-                '-c:a', 'aac',
-                '-shortest',
-                temp_output.name
-            ]
+            # Check Intel Arc GPU support
+            use_gpu = check_intel_arc_support()
+            
+            # Construct FFmpeg command with Intel Arc optimization
+            if use_gpu:
+                print("🚀 Using Intel Arc GPU acceleration for audio mixing")
+                cmd = [
+                    'ffmpeg',
+                    '-y',  # Force overwrite
+                    # Intel Arc hardware decoding
+                    '-hwaccel', 'vaapi',
+                    '-hwaccel_device', '/dev/dri/renderD128',
+                    '-i', temp_input.name,
+                    '-i', ding_path,
+                    '-filter_complex',
+                    f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
+                    '-map', '0:v',
+                    '-map', '[aout]',
+                    # Intel Arc hardware encoding
+                    '-c:v', 'h264_vaapi',
+                    '-profile:v', 'high',
+                    '-qp', '23',
+                    '-c:a', 'aac',
+                    '-shortest',
+                    temp_output.name
+                ]
+            else:
+                print("💻 Using CPU processing for audio mixing")
+                cmd = [
+                    'ffmpeg',
+                    '-y',  # Force overwrite
+                    '-i', temp_input.name,
+                    '-i', ding_path,
+                    '-filter_complex',
+                    f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
+                    '-map', '0:v',
+                    '-map', '[aout]',
+                    '-c:v', 'libx264',
+                    '-preset', 'medium',
+                    '-crf', '23',
+                    '-c:a', 'aac',
+                    '-shortest',
+                    temp_output.name
+                ]
             
             # Run FFmpeg
             process = run_ffmpeg_command(cmd)
