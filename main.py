@@ -133,25 +133,23 @@ async def add_ding_to_video(
             # Check Intel Arc GPU support
             use_gpu = check_intel_arc_support()
             
-            # Construct FFmpeg command with Intel Arc optimization
+            # Construct FFmpeg command with Intel Arc QuickSync optimization
             if use_gpu:
-                print("🚀 Using Intel Arc GPU acceleration for audio mixing")
+                print("🚀 Using Intel Arc QuickSync (QSV) for audio mixing")
                 cmd = [
                     'ffmpeg',
                     '-y',  # Force overwrite
-                    # Intel Arc hardware decoding
-                    '-hwaccel', 'vaapi',
-                    '-hwaccel_device', '/dev/dri/renderD128',
                     '-i', temp_input.name,
                     '-i', ding_path,
                     '-filter_complex',
                     f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
                     '-map', '0:v',
                     '-map', '[aout]',
-                    # Intel Arc hardware encoding
-                    '-c:v', 'h264_vaapi',
-                    '-profile:v', 'high',
-                    '-qp', '23',
+                    # Intel Arc QuickSync encoding
+                    '-c:v', 'h264_qsv',
+                    '-preset', 'medium',
+                    '-global_quality', '23',
+                    '-look_ahead', '1',
                     '-c:a', 'aac',
                     '-shortest',
                     temp_output.name
