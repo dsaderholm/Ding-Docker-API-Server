@@ -6,8 +6,20 @@ import asyncio
 from pathlib import Path
 import subprocess
 import traceback
+import time
+
+# Import Intel Arc GPU initialization
+try:
+    from intel_gpu_init import initialize_intel_arc_gpu
+except ImportError:
+    def initialize_intel_arc_gpu():
+        """Intel Arc GPU initialization placeholder"""
+        pass
 
 app = FastAPI()
+
+# Initialize Intel Arc GPU on startup
+initialize_intel_arc_gpu()
 
 def run_ffmpeg_command(cmd):
     """Run FFmpeg command with Intel Arc GPU acceleration and return detailed output"""
@@ -28,8 +40,149 @@ def run_ffmpeg_command(cmd):
         print(f"Exception running FFmpeg: {str(e)}")
         raise
 
+def try_intel_arc_encoding(input_path: str, output_path: str, ding_path: str, volume: float, max_retries: int = 3) -> bool:
+    """Try Intel Arc hardware encoding with multiple fallback methods."""
+    for attempt in range(max_retries):
+        try:
+            print(f"🚀 Attempting Intel Arc hardware encoding (attempt {attempt + 1})...")
+            
+            # Method 1: Intel Arc-specific QSV (requires proper drivers)
+            try:
+                print("🎯 Using Intel Arc QSV (requires updated drivers)...")
+                
+                cmd = [
+                    'ffmpeg',
+                    '-y',  # Force overwrite
+                    '-threads', '16',
+                    # QSV-specific initialization
+                    '-init_hw_device', 'qsv=hw',
+                    '-filter_hw_device', 'hw',
+                    '-i', input_path,
+                    '-i', ding_path,
+                    '-filter_complex',
+                    f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout];[0:v]format=qsv,hwupload=extra_hw_frames=64[v]',
+                    '-map', '[v]',
+                    '-map', '[aout]',
+                    # Intel Arc QuickSync encoding
+                    '-c:v', 'h264_qsv',
+                    '-preset', 'medium',
+                    '-global_quality', '23',
+                    '-look_ahead', '1',
+                    '-c:a', 'aac',
+                    '-shortest',
+                    output_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                
+                if result.returncode == 0:
+                    print("✅ Intel Arc QSV encoding successful!")
+                    return True
+                else:
+                    print(f"⚠️ QSV failed - likely driver issue")
+                    raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
+                    
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                print(f"⚠️ QSV failed, trying VA-API...")
+                
+                # Method 2: VA-API with software overlay (more compatible)
+                try:
+                    print("🔄 Using VA-API encoding...")
+                    
+                    cmd = [
+                        'ffmpeg',
+                        '-y',  # Force overwrite
+                        '-threads', '16',
+                        '-i', input_path,
+                        '-i', ding_path,
+                        '-filter_complex',
+                        f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout];[0:v]format=nv12,hwupload[v]',
+                        '-map', '[v]',
+                        '-map', '[aout]',
+                        '-c:v', 'h264_vaapi',
+                        '-vaapi_device', '/dev/dri/renderD128',
+                        '-qp', '23',
+                        '-c:a', 'aac',
+                        '-shortest',
+                        output_path
+                    ]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    
+                    if result.returncode == 0:
+                        print("✅ Intel Arc VA-API encoding successful!")
+                        return True
+                    else:
+                        print(f"⚠️ VA-API failed: {result.stderr[-200:] if result.stderr else 'Unknown error'}")
+                        raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
+                        
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                    print(f"⚠️ VA-API also failed, trying basic encoding...")
+                    
+                    # Method 3: Basic hardware acceleration
+                    try:
+                        print("🔄 Trying basic hardware acceleration...")
+                        
+                        cmd = [
+                            'ffmpeg',
+                            '-y',  # Force overwrite
+                            '-threads', '16',
+                            '-hwaccel', 'vaapi',
+                            '-hwaccel_device', '/dev/dri/renderD128',
+                            '-i', input_path,
+                            '-i', ding_path,
+                            '-filter_complex',
+                            f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
+                            '-map', '0:v',
+                            '-map', '[aout]',
+                            '-c:v', 'h264_vaapi',
+                            '-qp', '23',
+                            '-c:a', 'aac',
+                            '-shortest',
+                            output_path
+                        ]
+                        
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                        
+                        if result.returncode == 0:
+                            print("✅ Basic hardware acceleration successful!")
+                            return True
+                        else:
+                            print(f"⚠️ Basic hardware acceleration failed")
+                            raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
+                            
+                    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                        print(f"⚠️ All Intel Arc methods failed, falling back to software...")
+                        raise e
+            
+        except Exception as e:
+            print(f"❌ Intel Arc encoding attempt {attempt + 1} failed:")
+            if hasattr(e, 'stderr') and e.stderr:
+                error_msg = e.stderr if isinstance(e.stderr, str) else e.stderr.decode("utf8")
+                print("Error:", error_msg[-200:])  # Show last 200 chars
+                
+                # Specific Intel Arc troubleshooting
+                if "qsv" in error_msg.lower() or "mfx" in error_msg.lower():
+                    print("💡 QSV failed - Intel drivers may need updating")
+                elif "vaapi" in error_msg.lower():
+                    print("💡 VAAPI failed - trying software fallback")
+                elif "device" in error_msg.lower():
+                    print("💡 GPU device issue - check Docker device mapping")
+            else:
+                print(f"Error: {str(e)}")
+            
+            # Don't retry on the last attempt - just fail to software
+            if attempt == max_retries - 1:
+                print(f"❌ All Intel Arc attempts failed, using software encoding...")
+                break
+            
+            print(f"🔄 Retrying... ({attempt + 1}/{max_retries})")
+            time.sleep(2)
+    
+    return False
+
 def check_intel_arc_support():
-    """Check if Intel Arc GPU hardware acceleration is available"""
+    """Enhanced Intel Arc GPU availability check with multiple fallback methods"""
     try:
         # Run vainfo to check GPU hardware acceleration availability
         process = subprocess.run(['vainfo', '--display', 'drm', '--device', '/dev/dri/renderD128'], 
@@ -40,11 +193,17 @@ def check_intel_arc_support():
         
         if process.returncode == 0:
             gpu_info = process.stdout
-            if 'Intel' in gpu_info and 'H264' in gpu_info:
-                print("✅ Intel Arc GPU hardware acceleration available")
-                return True
+            if 'Intel' in gpu_info:
+                if 'H264' in gpu_info:
+                    print("✅ Intel Arc GPU hardware acceleration available")
+                    if 'iHD driver' in gpu_info:
+                        print("✅ Using Intel iHD driver for optimal Arc performance")
+                    return True
+                else:
+                    print("⚠️ Intel GPU found but H264 support limited")
+                    return False
             else:
-                print("⚠️ Intel GPU found but limited codec support")
+                print("⚠️ Non-Intel GPU detected")
                 return False
         else:
             print("⚠️ Intel GPU hardware acceleration not available")
@@ -133,32 +292,22 @@ async def add_ding_to_video(
             # Check Intel Arc GPU support
             use_gpu = check_intel_arc_support()
             
-            # Construct FFmpeg command with Intel Arc QuickSync optimization
+            # Try Intel Arc hardware encoding first
             if use_gpu:
-                print("🚀 Using Intel Arc QuickSync (QSV) for audio mixing")
+                success = try_intel_arc_encoding(temp_input.name, temp_output.name, ding_path, volume)
+                if success:
+                    print("✅ Intel Arc hardware encoding completed successfully")
+                else:
+                    print("⚠️ Intel Arc encoding failed, falling back to software")
+                    use_gpu = False
+            
+            # Software fallback if Intel Arc failed or not available
+            if not use_gpu:
+                print("💻 Using guaranteed software encoding...")
                 cmd = [
                     'ffmpeg',
                     '-y',  # Force overwrite
-                    '-i', temp_input.name,
-                    '-i', ding_path,
-                    '-filter_complex',
-                    f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
-                    '-map', '0:v',
-                    '-map', '[aout]',
-                    # Intel Arc QuickSync encoding
-                    '-c:v', 'h264_qsv',
-                    '-preset', 'medium',
-                    '-global_quality', '23',
-                    '-look_ahead', '1',
-                    '-c:a', 'aac',
-                    '-shortest',
-                    temp_output.name
-                ]
-            else:
-                print("💻 Using CPU processing for audio mixing")
-                cmd = [
-                    'ffmpeg',
-                    '-y',  # Force overwrite
+                    '-threads', '16',
                     '-i', temp_input.name,
                     '-i', ding_path,
                     '-filter_complex',
@@ -168,16 +317,17 @@ async def add_ding_to_video(
                     '-c:v', 'libx264',
                     '-preset', 'medium',
                     '-crf', '23',
+                    '-tune', 'fastdecode',
                     '-c:a', 'aac',
                     '-shortest',
                     temp_output.name
                 ]
-            
-            # Run FFmpeg
-            process = run_ffmpeg_command(cmd)
-            
-            if process.returncode != 0:
-                raise Exception(f"FFmpeg failed: {process.stderr}")
+                
+                # Run FFmpeg
+                process = run_ffmpeg_command(cmd)
+                
+                if process.returncode != 0:
+                    raise Exception(f"Software FFmpeg failed: {process.stderr}")
             
             # Verify output file
             if not os.path.exists(temp_output.name):
