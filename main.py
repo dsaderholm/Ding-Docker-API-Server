@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import traceback
 import time
+import threading
 
 # Import Intel Arc GPU initialization
 try:
@@ -17,6 +18,10 @@ except ImportError:
         pass
 
 app = FastAPI()
+
+# Global lock to prevent concurrent processing
+processing_lock = threading.Lock()
+processing_in_progress = False
 
 # Initialize Intel Arc GPU on startup
 initialize_intel_arc_gpu()
@@ -148,7 +153,7 @@ def try_intel_arc_encoding(input_path: str, output_path: str, ding_path: str, vo
                             print("✅ Basic hardware acceleration successful!")
                             return True
                         else:
-                            print(f"⚠️ Basic hardware acceleration failed")
+                            print("⚠️ Basic hardware acceleration failed")
                             raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
                             
                     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -212,179 +217,204 @@ def check_intel_arc_support():
         print(f"⚠️ GPU check failed: {str(e)}")
         return False
 
+@app.get("/status")
+async def get_status():
+    """Get current processing status"""
+    return {
+        "processing_in_progress": processing_in_progress,
+        "service": "Ding Audio Processor API"
+    }
+
 @app.post("/add-ding/")
 async def add_ding_to_video(
     video: UploadFile = File(...),
     volume: float = 0.10  # Default to 10% volume (0.0 to 1.0 scale)
 ):
-    # Validate file type
-    if not video.filename.lower().endswith(('.mp4', '.avi', '.mov')):
-        raise HTTPException(
-            status_code=400, 
-            detail="Unsupported file format. Only .mp4, .avi, and .mov files are supported."
-        )
+    global processing_in_progress
     
-    # Validate volume parameter
-    if not 0 <= volume <= 1:
-        raise HTTPException(
-            status_code=400, 
-            detail="Volume must be between 0.0 and 1.0"
-        )
+    # Check if processing is already in progress
+    with processing_lock:
+        if processing_in_progress:
+            raise HTTPException(
+                status_code=429,
+                detail="Video processing already in progress. Please wait."
+            )
+        processing_in_progress = True
     
-    print(f"Processing request for file: {video.filename}")
-    
-    # Create temporary files for processing
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_input, \
-         tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_output:
+    try:
+        # Validate file type
+        if not video.filename.lower().endswith(('.mp4', '.avi', '.mov')):
+            raise HTTPException(
+                status_code=400, 
+                detail="Unsupported file format. Only .mp4, .avi, and .mov files are supported."
+            )
         
-        try:
-            # Read file in chunks to handle large files
-            print("Reading uploaded file...")
-            with open(temp_input.name, 'wb') as buffer:
-                while content := await video.read(1024 * 1024):  # Read 1MB at a time
-                    buffer.write(content)
+        # Validate volume parameter
+        if not 0 <= volume <= 1:
+            raise HTTPException(
+                status_code=400, 
+                detail="Volume must be between 0.0 and 1.0"
+            )
+        
+        print(f"Processing request for file: {video.filename}")
+        
+        # Create temporary files for processing
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_input, \
+             tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_output:
             
-            file_size = os.path.getsize(temp_input.name)
-            print(f"File saved. Size: {file_size} bytes")
-            
-            if file_size < 1024:  # Less than 1KB
-                raise HTTPException(
-                    status_code=400,
-                    detail="Uploaded file is too small to be a valid video file"
-                )
-            
-            # Verify the video file is valid
-            probe_cmd = [
-                'ffprobe',
-                '-v', 'error',
-                '-select_streams', 'v:0',
-                '-show_entries', 'stream=width,height,duration',
-                '-of', 'json',
-                temp_input.name
-            ]
-            
-            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-            if probe_result.returncode != 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="The uploaded file is not a valid video file"
-                )
-            
-            # Check if ding file exists and is valid
-            ding_path = "/app/ding.mp3"
-            if not os.path.exists(ding_path):
-                raise HTTPException(
-                    status_code=500,
-                    detail="Ding sound file not found"
-                )
-            
-            ding_size = os.path.getsize(ding_path)
-            if ding_size == 0:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Ding sound file is empty"
-                )
-            
-            print(f"Input video path: {temp_input.name}")
-            print(f"Output video path: {temp_output.name}")
-            print(f"Ding file size: {ding_size} bytes")
-            
-            # Check Intel Arc GPU support
-            use_gpu = check_intel_arc_support()
-            
-            # Try Intel Arc hardware encoding first
-            if use_gpu:
-                success = try_intel_arc_encoding(temp_input.name, temp_output.name, ding_path, volume)
-                if success:
-                    print("✅ Intel Arc hardware encoding completed successfully")
-                else:
-                    print("⚠️ Intel Arc encoding failed, falling back to software")
-                    use_gpu = False
-            
-            # Software fallback if Intel Arc failed or not available
-            if not use_gpu:
-                print("💻 Using guaranteed software encoding...")
-                cmd = [
-                    'ffmpeg',
-                    '-y',  # Force overwrite
-                    '-threads', '16',
-                    '-i', temp_input.name,
-                    '-i', ding_path,
-                    '-filter_complex',
-                    f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
-                    '-map', '0:v',
-                    '-map', '[aout]',
-                    '-c:v', 'libx264',
-                    '-preset', 'medium',
-                    '-crf', '23',
-                    '-tune', 'fastdecode',
-                    '-c:a', 'aac',
-                    '-shortest',
-                    temp_output.name
+            try:
+                # Read file in chunks to handle large files
+                print("Reading uploaded file...")
+                with open(temp_input.name, 'wb') as buffer:
+                    while content := await video.read(1024 * 1024):  # Read 1MB at a time
+                        buffer.write(content)
+                
+                file_size = os.path.getsize(temp_input.name)
+                print(f"File saved. Size: {file_size} bytes")
+                
+                if file_size < 1024:  # Less than 1KB
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Uploaded file is too small to be a valid video file"
+                    )
+                
+                # Verify the video file is valid
+                probe_cmd = [
+                    'ffprobe',
+                    '-v', 'error',
+                    '-select_streams', 'v:0',
+                    '-show_entries', 'stream=width,height,duration',
+                    '-of', 'json',
+                    temp_input.name
                 ]
                 
-                # Run FFmpeg
-                process = run_ffmpeg_command(cmd)
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                if probe_result.returncode != 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="The uploaded file is not a valid video file"
+                    )
                 
-                if process.returncode != 0:
-                    raise Exception(f"Software FFmpeg failed: {process.stderr}")
-            
-            # Verify output file
-            if not os.path.exists(temp_output.name):
-                raise Exception("Output file was not created")
-            
-            output_size = os.path.getsize(temp_output.name)
-            if output_size == 0:
-                raise Exception("Output file is empty")
-            
-            print(f"Processing complete. Output size: {output_size} bytes")
-            
-            # Prepare response
-            headers = {
-                'Content-Type': 'video/mp4',
-                'Content-Disposition': f'attachment; filename="{Path(video.filename).stem}_with_ding.mp4"'
-            }
-            
-            response = FileResponse(
-                path=temp_output.name,
-                headers=headers
-            )
-            
-            # Set up cleanup
-            async def cleanup_files():
+                # Check if ding file exists and is valid
+                ding_path = "/app/ding.mp3"
+                if not os.path.exists(ding_path):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Ding sound file not found"
+                    )
+                
+                ding_size = os.path.getsize(ding_path)
+                if ding_size == 0:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Ding sound file is empty"
+                    )
+                
+                print(f"Input video path: {temp_input.name}")
+                print(f"Output video path: {temp_output.name}")
+                print(f"Ding file size: {ding_size} bytes")
+                
+                # Check Intel Arc GPU support
+                use_gpu = check_intel_arc_support()
+                
+                # Try Intel Arc hardware encoding first
+                if use_gpu:
+                    success = try_intel_arc_encoding(temp_input.name, temp_output.name, ding_path, volume)
+                    if success:
+                        print("✅ Intel Arc hardware encoding completed successfully")
+                    else:
+                        print("⚠️ Intel Arc encoding failed, falling back to software")
+                        use_gpu = False
+                
+                # Software fallback if Intel Arc failed or not available
+                if not use_gpu:
+                    print("💻 Using guaranteed software encoding...")
+                    cmd = [
+                        'ffmpeg',
+                        '-y',  # Force overwrite
+                        '-threads', '16',
+                        '-i', temp_input.name,
+                        '-i', ding_path,
+                        '-filter_complex',
+                        f'[1:a]volume={volume}[ding];[0:a][ding]amix=inputs=2:duration=first[aout]',
+                        '-map', '0:v',
+                        '-map', '[aout]',
+                        '-c:v', 'libx264',
+                        '-preset', 'medium',
+                        '-crf', '23',
+                        '-tune', 'fastdecode',
+                        '-c:a', 'aac',
+                        '-shortest',
+                        temp_output.name
+                    ]
+                    
+                    # Run FFmpeg
+                    process = run_ffmpeg_command(cmd)
+                    
+                    if process.returncode != 0:
+                        raise Exception(f"Software FFmpeg failed: {process.stderr}")
+                
+                # Verify output file
+                if not os.path.exists(temp_output.name):
+                    raise Exception("Output file was not created")
+                
+                output_size = os.path.getsize(temp_output.name)
+                if output_size == 0:
+                    raise Exception("Output file is empty")
+                
+                print(f"Processing complete. Output size: {output_size} bytes")
+                
+                # Prepare response
+                headers = {
+                    'Content-Type': 'video/mp4',
+                    'Content-Disposition': f'attachment; filename="{Path(video.filename).stem}_with_ding.mp4"'
+                }
+                
+                response = FileResponse(
+                    path=temp_output.name,
+                    headers=headers
+                )
+                
+                # Set up cleanup
+                async def cleanup_files():
+                    try:
+                        await asyncio.get_event_loop().run_in_executor(None, os.unlink, temp_input.name)
+                        await asyncio.get_event_loop().run_in_executor(None, os.unlink, temp_output.name)
+                    except Exception as e:
+                        print(f"Cleanup error: {str(e)}")
+                
+                response.background = cleanup_files
+                return response
+                
+            except Exception as e:
+                print("Error occurred:")
+                traceback.print_exc()
+                
+                # Clean up files
                 try:
-                    await asyncio.get_event_loop().run_in_executor(None, os.unlink, temp_input.name)
-                    await asyncio.get_event_loop().run_in_executor(None, os.unlink, temp_output.name)
-                except Exception as e:
-                    print(f"Cleanup error: {str(e)}")
-            
-            response.background = cleanup_files
-            return response
-            
-        except Exception as e:
-            print("Error occurred:")
-            traceback.print_exc()
-            
-            # Clean up files
-            try:
-                os.unlink(temp_input.name)
-                print(f"Cleaned up input file: {temp_input.name}")
-            except Exception as cleanup_error:
-                print(f"Error cleaning up input file: {str(cleanup_error)}")
-            
-            try:
-                os.unlink(temp_output.name)
-                print(f"Cleaned up output file: {temp_output.name}")
-            except Exception as cleanup_error:
-                print(f"Error cleaning up output file: {str(cleanup_error)}")
-            
-            # Return appropriate error
-            if isinstance(e, HTTPException):
-                raise e
-            raise HTTPException(
-                status_code=500,
-                detail=str(e)
-            )
+                    os.unlink(temp_input.name)
+                    print(f"Cleaned up input file: {temp_input.name}")
+                except Exception as cleanup_error:
+                    print(f"Error cleaning up input file: {str(cleanup_error)}")
+                
+                try:
+                    os.unlink(temp_output.name)
+                    print(f"Cleaned up output file: {temp_output.name}")
+                except Exception as cleanup_error:
+                    print(f"Error cleaning up output file: {str(cleanup_error)}")
+                
+                # Return appropriate error
+                if isinstance(e, HTTPException):
+                    raise e
+                raise HTTPException(
+                    status_code=500,
+                    detail=str(e)
+                )
+    
+    finally:
+        # Always reset the processing flag
+        with processing_lock:
+            processing_in_progress = False
 
 if __name__ == "__main__":
     import uvicorn
